@@ -6,7 +6,7 @@ from itertools import chain
 from django.core.exceptions import EmptyResultSet, FieldError
 from django.db import DatabaseError, NotSupportedError
 from django.db.models.constants import LOOKUP_SEP
-from django.db.models.expressions import F, OrderBy, RawSQL, Ref, Value
+from django.db.models.expressions import F, OrderBy, RawSQL, Ref, Value, CombinedExpression
 from django.db.models.functions import Cast, Random
 from django.db.models.query_utils import Q, select_related_descend
 from django.db.models.sql.constants import (
@@ -39,6 +39,7 @@ class SQLCompiler:
         self.annotation_col_map = None
         self.klass_info = None
         self._meta_ordering = None
+        self.expression_in_grpby = False
 
     def setup_query(self):
         if all(self.query.alias_refcount[a] == 0 for a in self.query.alias_map):
@@ -100,6 +101,7 @@ class SQLCompiler:
         if self.query.group_by is None:
             return []
         expressions = []
+        self.expression_in_grpby = False
         if self.query.group_by is not True:
             # If the group by is set to a list (by .values() call most likely),
             # then we need to add everything in it to the GROUP BY clause.
@@ -107,6 +109,8 @@ class SQLCompiler:
             # when  we have public API way of forcing the GROUP BY clause.
             # Converts string references to expressions.
             for expr in self.query.group_by:
+                if isinstance(expr, CombinedExpression):
+                    self.expression_in_grpby = True
                 if not hasattr(expr, 'as_sql'):
                     expressions.append(self.query.resolve_ref(expr))
                 else:
@@ -1173,7 +1177,10 @@ class SQLCompiler:
         else:
             cursor = self.connection.cursor()
         try:
-            cursor.execute(sql, params)
+            if self.expression_in_grpby and hasattr(cursor,'execute_with_val_placeholder_in_gb'):
+                cursor.execute_with_val_placeholder_in_gb(sql, params)
+            else:
+                cursor.execute(sql,params)
         except Exception:
             # Might fail for server-side cursors (e.g. connection closed)
             cursor.close()
@@ -1415,7 +1422,10 @@ class SQLInsertCompiler(SQLCompiler):
         self.returning_fields = returning_fields
         with self.connection.cursor() as cursor:
             for sql, params in self.as_sql():
-                cursor.execute(sql, params)
+                if self.expression_in_grpby and hasattr(cursor,'execute_with_val_placeholder_in_gb'):
+                    cursor.execute_with_val_placeholder_in_gb(sql, params)
+                else:
+                    cursor.execute(sql,params)
             if not self.returning_fields:
                 return []
             if self.connection.features.can_return_rows_from_bulk_insert and len(self.query.objs) > 1:
