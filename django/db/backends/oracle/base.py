@@ -515,11 +515,19 @@ class FormatStylePlaceholderCursor:
         return query, self._format_params(params)
 
     def execute(self, query, params=None):
+        query, params = self._fix_for_params(query, params, unify_by_values=False)
+        self._guess_input_sizes([params])
+        with wrap_oracle_errors():
+            return self.cursor.execute(query, self._param_generator(params))
+    
+    def execute_with_val_placeholder_in_gb(self, query, params=None):
+        # If we have a GROUP BY that includes a value-based placeholder
+        # then we must unify placeholder names by value
         query, params = self._fix_for_params(query, params, unify_by_values=True)
         self._guess_input_sizes([params])
         with wrap_oracle_errors():
             return self.cursor.execute(query, self._param_generator(params))
-
+        
     def executemany(self, query, params=None):
         if not params:
             # No params given, nothing to do
