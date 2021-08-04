@@ -18,7 +18,7 @@ from os.path import abspath, dirname, join
 #
 # Python's default allowed recursion depth is 1000 but this isn't enough for
 # building docs/ref/settings.txt sometimes.
-# https://groups.google.com/d/topic/sphinx-dev/MtRf64eGtv4/discussion
+# https://groups.google.com/g/sphinx-dev/c/MtRf64eGtv4/discussion
 sys.setrecursionlimit(2000)
 
 # Make sure we get the version of this copy of Django
@@ -49,6 +49,28 @@ extensions = [
 # labels, so set max depth.
 autosectionlabel_prefix_document = True
 autosectionlabel_maxdepth = 2
+
+# Linkcheck settings.
+linkcheck_ignore = [
+    # Special-use addresses and domain names. (RFC 6761/6890)
+    r'^https?://(?:127\.0\.0\.1|\[::1\])(?::\d+)?/',
+    r'^https?://(?:[^/\.]+\.)*example\.(?:com|net|org)(?::\d+)?/',
+    r'^https?://(?:[^/\.]+\.)*(?:example|invalid|localhost|test)(?::\d+)?/',
+    # Pages that are inaccessible because they require authentication.
+    r'^https://github\.com/[^/]+/[^/]+/fork',
+    r'^https://code\.djangoproject\.com/github/login',
+    r'^https://code\.djangoproject\.com/newticket',
+    r'^https://(?:code|www)\.djangoproject\.com/admin/',
+    r'^https://www\.djangoproject\.com/community/add/blogs/',
+    r'^https://www\.google\.com/webmasters/tools/ping',
+    r'^https://search\.google\.com/search-console/welcome',
+    # Fragments used to dynamically switch content or populate fields.
+    r'^https://web\.libera\.chat/#',
+    r'^https://github\.com/[^#]+#L\d+-L\d+$',
+    r'^https://help\.apple\.com/itc/podcasts_connect/#/itc',
+    # Anchors on certain pages with missing a[name] attributes.
+    r'^https://tools\.ietf\.org/html/rfc1123\.html#section-',
+]
 
 # Spelling check needs an additional module that is not installed by default.
 # Add it only if spelling check is requested so docs can be generated without it.
@@ -243,7 +265,6 @@ modindex_common_prefix = ["django."]
 # Appended to every page
 rst_epilog = """
 .. |django-users| replace:: :ref:`django-users <django-users-mailing-list>`
-.. |django-core-mentorship| replace:: :ref:`django-core-mentorship <django-core-mentorship-mailing-list>`
 .. |django-developers| replace:: :ref:`django-developers <django-developers-mailing-list>`
 .. |django-announce| replace:: :ref:`django-announce <django-announce-mailing-list>`
 .. |django-updates| replace:: :ref:`django-updates <django-updates-mailing-list>`
@@ -296,7 +317,7 @@ latex_documents = [
 man_pages = [(
     'ref/django-admin',
     'django-admin',
-    'Utility script for the Django Web framework',
+    'Utility script for the Django web framework',
     ['Django Software Foundation'],
     1
 )]

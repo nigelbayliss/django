@@ -6,7 +6,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from django.core.exceptions import EmptyResultSet, FieldError
-from django.db import NotSupportedError, connection
+from django.db import DatabaseError, NotSupportedError, connection
 from django.db.models import fields
 from django.db.models.constants import LOOKUP_SEP
 from django.db.models.query_utils import Q
@@ -147,13 +147,13 @@ class Combinable:
         )
 
 
-@deconstructible
 class BaseExpression:
     """Base class for all query expressions."""
 
     # aggregate specific fields
     is_summary = False
     _output_field_resolved_to_none = False
+    empty_aggregate_value = NotImplemented
     # Can the expression be used in a WHERE clause?
     filterable = True
     # Can the expression can be used as a source expression in Window?
@@ -389,6 +389,11 @@ class BaseExpression:
             return self.output_field.select_format(compiler, sql, params)
         return sql, params
 
+
+@deconstructible
+class Expression(BaseExpression, Combinable):
+    """An expression that can be combined with other expressions."""
+
     @cached_property
     def identity(self):
         constructor_signature = inspect.signature(self.__init__)
@@ -409,17 +414,12 @@ class BaseExpression:
         return tuple(identity)
 
     def __eq__(self, other):
-        if not isinstance(other, BaseExpression):
+        if not isinstance(other, Expression):
             return NotImplemented
         return other.identity == self.identity
 
     def __hash__(self):
         return hash(self.identity)
-
-
-class Expression(BaseExpression, Combinable):
-    """An expression that can be combined with other expressions."""
-    pass
 
 
 _connector_combinators = {
@@ -545,6 +545,24 @@ class DurationExpression(CombinedExpression):
         expression_wrapper = '(%s)'
         sql = connection.ops.combine_duration_expression(self.connector, expressions)
         return expression_wrapper % sql, expression_params
+
+    def as_sqlite(self, compiler, connection, **extra_context):
+        sql, params = self.as_sql(compiler, connection, **extra_context)
+        if self.connector in {Combinable.MUL, Combinable.DIV}:
+            try:
+                lhs_type = self.lhs.output_field.get_internal_type()
+                rhs_type = self.rhs.output_field.get_internal_type()
+            except (AttributeError, FieldError):
+                pass
+            else:
+                allowed_fields = {
+                    'DecimalField', 'DurationField', 'FloatField', 'IntegerField',
+                }
+                if lhs_type not in allowed_fields or rhs_type not in allowed_fields:
+                    raise DatabaseError(
+                        f'Invalid arguments for operator {self.connector}.'
+                    )
+        return sql, params
 
 
 class TemporalSubtraction(CombinedExpression):
@@ -726,7 +744,7 @@ class Value(SQLiteNumericMixin, Expression):
         self.value = value
 
     def __repr__(self):
-        return "{}({})".format(self.__class__.__name__, self.value)
+        return f'{self.__class__.__name__}({self.value!r})'
 
     def as_sql(self, compiler, connection):
         connection.ops.check_expression_support(self)
@@ -777,6 +795,10 @@ class Value(SQLiteNumericMixin, Expression):
             return fields.BinaryField()
         if isinstance(self.value, UUID):
             return fields.UUIDField()
+
+    @property
+    def empty_aggregate_value(self):
+        return self.value
 
 
 class RawSQL(Expression):
@@ -1085,7 +1107,7 @@ class Case(Expression):
         return super().get_group_by_cols(alias)
 
 
-class Subquery(Expression):
+class Subquery(BaseExpression, Combinable):
     """
     An explicit subquery. It may contain OuterRef() references to the outer
     query which will be resolved when it is applied to that query.
@@ -1098,16 +1120,6 @@ class Subquery(Expression):
         self.query = getattr(queryset, 'query', queryset)
         self.extra = extra
         super().__init__(output_field)
-
-    def __getstate__(self):
-        state = super().__getstate__()
-        args, kwargs = state['_constructor_args']
-        if args:
-            args = (self.query, *args[1:])
-        else:
-            kwargs['queryset'] = self.query
-        state['_constructor_args'] = args, kwargs
-        return state
 
     def get_source_expressions(self):
         return [self.query]
@@ -1185,7 +1197,7 @@ class Exists(Subquery):
         return sql, params
 
 
-class OrderBy(BaseExpression):
+class OrderBy(Expression):
     template = '%(expression)s %(ordering)s'
     conditional = False
 
@@ -1232,14 +1244,13 @@ class OrderBy(BaseExpression):
             'ordering': 'DESC' if self.descending else 'ASC',
             **extra_context,
         }
-        template = template or self.template
         params *= template.count('%(expression)s')
         return (template % placeholders).rstrip(), params
 
     def as_oracle(self, compiler, connection):
-        # Oracle doesn't allow ORDER BY EXISTS() unless it's wrapped in
-        # a CASE WHEN.
-        if isinstance(self.expression, Exists):
+        # Oracle doesn't allow ORDER BY EXISTS() or filters unless it's wrapped
+        # in a CASE WHEN.
+        if connection.ops.conditional_expression_supported_in_where_clause(self.expression):
             copy = self.copy()
             copy.expression = Case(
                 When(self.expression, then=True),
